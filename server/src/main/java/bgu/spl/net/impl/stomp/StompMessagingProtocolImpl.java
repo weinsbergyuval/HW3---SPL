@@ -7,6 +7,7 @@ import bgu.spl.net.impl.stomp.ConnectionsImpl;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 
 //YA - implementaion of STOMP messaging protocol Interface
@@ -29,6 +30,8 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
 
     private boolean connected = false; //YA - whether the client is connected
     private boolean shouldTerminate = false; //YA - whether the connection should be terminated
+    private static final AtomicInteger messageIdCounter = new AtomicInteger(1);//YA - for generating unique message IDs-amit
+
 
     @Override
     public void start(int connectionId, Connections<String> connections) {
@@ -63,8 +66,8 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
                 break;
 
             default:
-                sendError("Unknown command", null, message);
-                shouldTerminate = true; //YA - mandatory close after ERROR
+                sendError("Unknown command", null, message);//YA - mandatory close after ERROR
+                return; 
         }
     }
 
@@ -86,19 +89,19 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             return;
         }
 
-        if (loggedInUsers.contains(this.login)) {
-            sendError("User already logged in", null, originalFrame);
-            shouldTerminate = true;
-            return;
-        }
-
         if (connected) {
             sendError("Already connected", null, originalFrame);
             shouldTerminate = true;
             return;
         }
 
-        loggedInUsers.add(this.login); //YA - add user to logged in users
+        // YA atomic login check: add() returns false if already present-amit
+        //prevent race condition on multiple logins of the same user-amit
+        if (!loggedInUsers.add(this.login)) {
+            sendError("User already logged in", null, originalFrame);
+            return;
+        }
+
         connected = true;
 
         String response = "CONNECTED\nversion:1.2\n\n\0";
@@ -203,6 +206,11 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             return;
         }
 
+        if (!subscriptions.containsValue(destination)) {//YA - user not subscribed to destination checking-amit
+        sendError("User is not subscribed to destination", receiptId, originalFrame);
+        return;
+    }
+
         StringBuilder body = new StringBuilder();  //YA - extract body
         for (int i = bodyStart; i < lines.length; i++) {
             body.append(lines[i]);
@@ -215,12 +223,14 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
         //YA - send MESSAGE to each subscriber with subscription header
         for (Integer connId : connImpl.getSubscribers(destination)) {
             Integer subId = connImpl.getSubscriptionId(connId, destination);
+            int msgId = messageIdCounter.getAndIncrement();//YA - unique message ID-amit
 
             String messageFrame =
-                    "MESSAGE\n" +
-                    "subscription:" + subId + "\n" +
-                    "destination:" + destination + "\n\n" +
-                    body + "\n\0";
+                "MESSAGE\n" +
+                "subscription:" + subId + "\n" +
+                "message-id:" + msgId + "\n" +// YA - unique message ID-amit
+                "destination:" + destination + "\n\n" +
+                body + "\n\0";
 
             connections.send(connId, messageFrame);
         }
@@ -272,6 +282,15 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
         frame.append(shortMsg).append("\n\0");
 
         connections.send(connectionId, frame.toString());
+
+        // YA remove user from logged-in set (if logged in)-amit
+        if (login != null) {
+            loggedInUsers.remove(login);
+        }
+
+        // YA after ERROR server must close the connection-amit
+        connections.disconnect(connectionId);
+        shouldTerminate = true;
     }
 
     @Override
