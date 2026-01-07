@@ -118,6 +118,15 @@ public class NonBlockingConnectionHandler<T> implements ConnectionHandler<T> {
 
     @Override
     public void send(T msg) {
-        //IMPLEMENT IF NEEDED
+        // YA ignore null messages
+        if (msg == null) return;
+
+        // YA encode message to bytes and enqueue for writing
+        writeQueue.add(ByteBuffer.wrap(encdec.encode(msg)));// YA decode from string to bytes
+        //  enqueue in writeQueue for the continueWrite method can write it when the socket is ready
+
+        // YA make sure reactor will also listen for OP_WRITE - "call me when you can read and write"
+        reactor.updateInterestedOps(chan, SelectionKey.OP_READ | SelectionKey.OP_WRITE);
     }
+
 }

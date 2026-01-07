@@ -55,6 +55,22 @@ public class BlockingConnectionHandler<T> implements Runnable, ConnectionHandler
 
     @Override
     public void send(T msg) {
-        //IMPLEMENT IF NEEDED
+        // YA send msg to client (blocking I/O)
+        if (msg == null) return;
+        if (out == null) return; // YA safety: out is initialized in run() - race condition check
+
+        try {
+            byte[] bytes = encdec.encode(msg);// YA encode message to bytes
+
+            // YA prevent mixed writes from multiple threads
+            synchronized (out) {
+                out.write(bytes);// YA write bytes to output stream
+                out.flush();// YA flush to ensure sending
+            }
+        } catch (IOException e) {
+            // YA if send fails -> disconnect
+            connected = false;
+            try { close(); } catch (IOException ignored) {}
+        }
     }
 }
