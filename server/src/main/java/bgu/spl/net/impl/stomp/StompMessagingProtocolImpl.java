@@ -2,8 +2,10 @@ package bgu.spl.net.impl.stomp;
 
 import bgu.spl.net.api.StompMessagingProtocol;
 import bgu.spl.net.srv.Connections;
+import bgu.spl.net.impl.stomp.ConnectionsImpl;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 
 //YA - implementaion of STOMP messaging protocol Interface
@@ -18,6 +20,11 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
     private int connectionId; //YA - the unique ID of the connection
     private Connections<String> connections; //YA - so we can send messages to other clients
     private final Map<Integer, String> subscriptions = new HashMap<>(); //YA - subscriptionId -> channel
+
+    //YA - set of logged in users to prevent multiple logins
+    private static final Set<String> loggedInUsers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    private String login; //YA - current user's login
 
     private boolean connected = false; //YA - whether the client is connected
     private boolean shouldTerminate = false; //YA - whether the connection should be terminated
@@ -61,14 +68,38 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
     }
 
     private void handleConnect(String[] lines, String originalFrame) { //YA - if already connected, send error and terminate
+        String passcode = null;
+        this.login = null;
+
+        for (int i = 1; i < lines.length; i++) {
+            if (lines[i].startsWith("login:")) {
+                this.login = lines[i].substring("login:".length()); //YA - get login
+            } else if (lines[i].startsWith("passcode:")) {
+                passcode = lines[i].substring("passcode:".length()); //YA - get passcode
+            }
+        }
+
+        if (this.login == null || passcode == null) {
+            sendError("Missing login or passcode", null, originalFrame); //YA - send ERROR frame if no login/passcode
+            shouldTerminate = true;
+            return;
+        }
+
+        if (loggedInUsers.contains(this.login)) {
+            sendError("User already logged in", null, originalFrame); //YA - send ERROR frame if user already logged in
+            shouldTerminate = true;
+            return;
+        }
+
         if (connected) {
             sendError("Already connected", null, originalFrame);
             shouldTerminate = true;
             return;
         }
 
-        
+        loggedInUsers.add(this.login); //YA - add user to logged in users
         connected = true;
+
         String response = "CONNECTED\nversion:1.2\n\n\0";
         connections.send(connectionId, response); //YA - send CONNECTED frame back to client
     }
@@ -138,7 +169,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             sendReceipt(receiptId);
     }
 
-    private void handleSend(String[] lines, String originalFrame) { //YA - handle SEND command - build MESSAGE Frame 
+    private void handleSend(String[] lines, String originalFrame) { //YA - handle SEND command - build MESSAGE Frame
         if (!connected) {
             sendError("Not connected", null, originalFrame);
             shouldTerminate = true;
@@ -173,6 +204,7 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
             if (i < lines.length - 1)
                 body.append("\n");
         }
+
         //YA - build MESSAGE Frame
         String messageFrame =
                 "MESSAGE\n" +
@@ -196,6 +228,10 @@ public class StompMessagingProtocolImpl implements StompMessagingProtocol<String
 
         if (receiptId != null)
             sendReceipt(receiptId);
+
+        if (login != null) {
+            loggedInUsers.remove(login);
+        }
 
         connections.disconnect(connectionId);
         shouldTerminate = true;
